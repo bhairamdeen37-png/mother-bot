@@ -15,34 +15,111 @@ import db
 TOKEN_RE = re.compile(r"^\d{6,12}:[A-Za-z0-9_-]{30,}$")
 ALLOWED = ["message", "edited_message", "callback_query"]
 
+# ================= STYLE =================
+LINE = "━━━━━━━━━━━━━━━━━━"
+_last = {}  # chat_id -> last panel message id (sirf ek panel screen par rahe)
+
+
+def _mk():
+    d = {}
+    for i, c in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+        d[c] = chr(0x1D5D4 + i)
+    for i, c in enumerate("abcdefghijklmnopqrstuvwxyz"):
+        d[c] = chr(0x1D5EE + i)
+    for i, c in enumerate("0123456789"):
+        d[c] = chr(0x1D7EC + i)
+    return d
+
+
+_BOLD = _mk()
+
+
+def bd(t):
+    """Stylish bold letters: Spark -> 𝗦𝗽𝗮𝗿𝗸"""
+    return "".join(_BOLD.get(c, c) for c in t)
+
+
+def card(icon, title, *lines):
+    return f"✦{LINE}✦\n   {icon} {bd(title)} {icon}\n✦{LINE}✦\n\n" + "\n".join(lines)
+
 
 def B(t, d):
     return Btn(t, callback_data=d)
 
 
+def back_kb(label="🏠 Menu", data="home"):
+    return Kb([[B(label, data)]])
+
+
 def menu(uid):
-    rows = [[B("➕ Create My Bot", "create"), B("🤖 My Bot", "my")],
-            [B("💎 Upgrade", "up"), B("🎟 Coupon", "coupon")],
-            [B("ℹ️ Help", "help")]]
+    rows = [[B("➕ Create Bot", "create"), B("🤖 My Bots", "my")],
+            [B("💎 Premium", "up"), B("🎟 Coupon", "coupon")],
+            [B("📖 Help", "help")]]
     if uid == core.OWNER_ID:
         rows.append([B("👑 Owner Panel", "o:menu")])
     return Kb(rows)
 
 
-HELP = f"""🤖 Spark Live Bot
+async def safe_delete(m):
+    try:
+        await m.delete()
+    except TelegramError:
+        pass
 
-Apna personal inbox bot banao: log tumhare bot ko message karenge, tum reply karoge, aur tumhara personal account kisi ko nahi dikhega.
 
-➕ Create My Bot – BotFather ka token do, bot ready
-🤖 My Bot – pause / delete / status
-💎 Upgrade – Premium Stars se
-🎟 Coupon – code se free Premium
+async def _purge(bot, chat, old):
+    ids = set()
+    if old is not None:
+        ids.add(old.message_id)
+    last = _last.get(chat)
+    if last:
+        ids.add(last)
+    for i in ids:
+        try:
+            await bot.delete_message(chat, i)
+        except TelegramError:
+            pass
 
-🆓 Free: {core.FREE_CLONES} bot, {core.FREE_USERS} users
-💎 Premium: {core.PREMIUM_CLONES} bots, unlimited users, broadcast, auto-reply, working hours, VIP, tags, force join, branding hatao"""
 
-OHELP = """👑 Owner commands
-/owner – panel
+async def show(bot, chat, text, kb=None, old=None):
+    """Purana panel delete karo, naya bhejo."""
+    await _purge(bot, chat, old)
+    s = await bot.send_message(chat, text, reply_markup=kb)
+    _last[chat] = s.message_id
+    return s
+
+
+# ================= TEXTS =================
+def home_text(name):
+    return card(
+        "⚡", "SPARK LIVE BOT",
+        f"👋 {bd('Welcome')}, {name}!", "",
+        "◈ Apna personal inbox bot 1 minute me banao",
+        "◈ Log bot ko message karein → tumhe milega",
+        "◈ Tum reply karo → seedha unhe jayega",
+        "◈ Tumhara account kisi ko nahi dikhega 🔒", "",
+        f"🆓 {bd('Free')}  ➜  {core.FREE_CLONES} bot • {core.FREE_USERS} users",
+        f"💎 {bd('Premium')}  ➜  {core.PREMIUM_CLONES} bots • Unlimited users", "",
+        "👇 Neeche se option chuno",
+    )
+
+
+def help_text():
+    return card(
+        "📖", "HELP",
+        f"➕ {bd('Create Bot')}  –  BotFather ka token do, bot ready",
+        f"🤖 {bd('My Bots')}  –  status, pause, delete",
+        f"💎 {bd('Premium')}  –  Stars se upgrade",
+        f"🎟 {bd('Coupon')}  –  code se free Premium", "",
+        f"🆓 {bd('Free')}: {core.FREE_CLONES} bot, {core.FREE_USERS} users",
+        f"💎 {bd('Premium')}: {core.PREMIUM_CLONES} bots, unlimited users,",
+        "     broadcast, auto-reply, working hours,",
+        "     VIP, tags, force join, branding hatao", "",
+        "⌨️ Commands: /start  /create  /mybot  /upgrade  /coupon",
+    )
+
+
+OHELP = """/owner – panel
 /clones [page], /search text
 /pause ID, /resume ID, /remove ID   (clone ID)
 /ban OWNERID, /unban OWNERID
@@ -53,6 +130,8 @@ OHELP = """👑 Owner commands
 /payments, /stats
 /maintenance on|off – naye clones band/chalu
 /backup – CSV files"""
+
+STATUS = {"active": "🟢 Active", "paused": "⏸ Paused", "dead": "💀 Dead", "banned": "🚫 Banned"}
 
 
 # ================= ENTRY =================
@@ -73,8 +152,12 @@ async def pre_checkout(q):
     await q.answer(ok=ok, error_message=None if ok else "Invalid plan")
 
 
+async def home(bot, chat, u, old=None):
+    await show(bot, chat, home_text(u.first_name), menu(u.id), old)
+
+
 async def on_msg(bot, m):
-    u = m.from_user
+    u, chat = m.from_user, m.chat_id
     await core.ensure_owner(u)
     o = await db.one("SELECT banned FROM owners WHERE id=?", u.id)
     if o["banned"] and u.id != core.OWNER_ID:
@@ -83,25 +166,39 @@ async def on_msg(bot, m):
         await paid(bot, m)
         return
     text = m.text or ""
+
     if not text.startswith("/"):
         st = await db.one("SELECT state FROM state WHERE owner_id=?", u.id)
-        if st and st["state"] == "token":
-            await take_token(bot, m, text.strip())
-        elif st and st["state"] == "coupon":
-            await redeem(bot, m, text.strip())
-        else:
-            await bot.send_message(m.chat_id, "Menu ke liye /start dabao.", reply_markup=menu(u.id))
+        if st:
+            if not text:
+                await safe_delete(m)
+                return
+            kind, _, mid = st["state"].partition(":")
+            if mid.isdigit():
+                try:
+                    await bot.delete_message(chat, int(mid))
+                except TelegramError:
+                    pass
+            await safe_delete(m)
+            await db.ex("DELETE FROM state WHERE owner_id=?", u.id)
+            if kind == "token":
+                await take_token(bot, m, text.strip())
+            elif kind == "coupon":
+                await redeem(bot, m, text.strip())
+            return
+        await safe_delete(m)
+        await home(bot, chat, u)
         return
 
+    await safe_delete(m)
     await db.ex("DELETE FROM state WHERE owner_id=?", u.id)
     parts = text.split(maxsplit=1)
     cmd = parts[0][1:].split("@")[0].lower()
     rest = parts[1] if len(parts) > 1 else ""
-    chat = m.chat_id
     if cmd in ("start", "menu"):
-        await bot.send_message(chat, f"👋 Hello {u.first_name}!\n\n" + HELP, reply_markup=menu(u.id))
+        await home(bot, chat, u)
     elif cmd == "help":
-        await bot.send_message(chat, HELP, reply_markup=menu(u.id))
+        await show(bot, chat, help_text(), back_kb())
     elif cmd == "create":
         await start_create(bot, chat, u.id)
     elif cmd == "mybot":
@@ -112,10 +209,9 @@ async def on_msg(bot, m):
         if rest:
             await redeem(bot, m, rest.strip())
         else:
-            await db.ex("INSERT OR REPLACE INTO state(owner_id,state) VALUES(?,'coupon')", u.id)
-            await bot.send_message(chat, "🎟 Coupon code bhejo (ya /cancel):")
+            await ask_coupon(bot, chat, u.id)
     elif cmd == "cancel":
-        await bot.send_message(chat, "❌ Cancel.", reply_markup=menu(u.id))
+        await home(bot, chat, u)
     elif u.id == core.OWNER_ID:
         await owner_cmd(bot, m, cmd, rest)
 
@@ -131,51 +227,73 @@ async def joined(bot, uid):
         return True
 
 
-async def start_create(bot, chat, uid):
+async def ask_token(bot, chat, uid, old=None, err=None):
+    lines = [
+        f"①  @BotFather kholo",
+        f"②  /newbot bhejo – naam aur username do",
+        f"③  Jo {bd('TOKEN')} mile (123456:ABC...) wo yahan paste karo", "",
+        "🔐 Token encrypted store hota hai",
+    ]
+    if err:
+        lines += ["", err]
+    kb = Kb([[Btn("🤖 Open BotFather", url="https://t.me/BotFather")], [B("❌ Cancel", "home")]])
+    s = await show(bot, chat, card("🛠", "CREATE BOT", *lines), kb, old)
+    await db.ex("INSERT OR REPLACE INTO state(owner_id,state) VALUES(?,?)", uid, f"token:{s.message_id}")
+
+
+async def ask_coupon(bot, chat, uid, old=None, err=None):
+    lines = ["🎟 Apna coupon code bhejo", "", "Example:  FRIEND30"]
+    if err:
+        lines += ["", err]
+    s = await show(bot, chat, card("🎟", "COUPON", *lines), back_kb("❌ Cancel"), old)
+    await db.ex("INSERT OR REPLACE INTO state(owner_id,state) VALUES(?,?)", uid, f"coupon:{s.message_id}")
+
+
+async def start_create(bot, chat, uid, old=None):
     if uid != core.OWNER_ID and await db.kv_get("maintenance", "0") == "1":
-        await bot.send_message(chat, "🛠 Abhi naye bots banana band hai. Thodi der baad aao.")
+        await show(bot, chat, card("🛠", "MAINTENANCE", "Abhi naye bots banana band hai.", "Thodi der baad aao."), back_kb(), old)
         return
     if not await joined(bot, uid):
-        await bot.send_message(chat, f"📢 Pehle {core.FORCE_JOIN} join karo, phir dobara try karo.",
-                               reply_markup=Kb([[Btn("📢 Join", url=f"https://t.me/{core.FORCE_JOIN.lstrip('@')}")]]))
+        kb = Kb([[Btn("📢 Join Channel", url=f"https://t.me/{core.FORCE_JOIN.lstrip('@')}")],
+                 [B("✅ Join kar liya", "create")], [B("🏠 Menu", "home")]])
+        await show(bot, chat, card("📢", "JOIN REQUIRED", f"Pehle {core.FORCE_JOIN} join karo,", "phir dobara try karo."), kb, old)
         return
     n = (await db.one("SELECT COUNT(*) c FROM clones WHERE owner_id=?", uid))["c"]
     prem = await core.is_premium(uid)
     lim = 99 if uid == core.OWNER_ID else (core.PREMIUM_CLONES if prem else core.FREE_CLONES)
     if n >= lim:
-        extra = "" if prem else f"\n💎 Premium me {core.PREMIUM_CLONES} bots bana sakte ho: /upgrade"
-        await bot.send_message(chat, f"⚠️ Tumhara bot limit ({lim}) poora ho gaya.{extra}")
+        lines = [f"Tumhara bot limit ({lim}) poora ho gaya."]
+        rows = [[B("🏠 Menu", "home")]]
+        if not prem:
+            lines += ["", f"💎 Premium me {core.PREMIUM_CLONES} bots bana sakte ho."]
+            rows.insert(0, [B("💎 Premium lo", "up")])
+        await show(bot, chat, card("⚠️", "LIMIT FULL", *lines), Kb(rows), old)
         return
-    await db.ex("INSERT OR REPLACE INTO state(owner_id,state) VALUES(?,'token')", uid)
-    await bot.send_message(
-        chat,
-        "🛠 Bot banane ke steps:\n\n1️⃣ @BotFather kholo\n2️⃣ /newbot bhejo, naam aur username do\n"
-        "3️⃣ Jo token mile (123456:ABC...) wo yahan paste karo\n\n(Token safe store hota hai, encrypted. Cancel: /cancel)")
+    await ask_token(bot, chat, uid, old)
 
 
 async def take_token(bot, m, token):
-    u = m.from_user
-    try:
-        await m.delete()
-    except TelegramError:
-        pass
+    u, chat = m.from_user, m.chat_id
     if not TOKEN_RE.match(token) or token == core.MAIN_TOKEN:
-        await bot.send_message(m.chat_id, "❌ Token galat lag raha hai. Dobara bhejo ya /cancel.")
+        await ask_token(bot, chat, u.id, err="❌ Token galat lag raha hai. Dobara bhejo.")
         return
+    err = None
+    me = None
     tb = Bot(token)
     try:
         async with tb:
             me = await tb.get_me()
             if await db.one("SELECT id FROM clones WHERE id=?", me.id):
-                await bot.send_message(m.chat_id, "⚠️ Ye bot pehle se registered hai.")
-                return
-            await tb.set_webhook(url=f"{core.BASE_URL}/wh/{me.id}", secret_token=core.secret_for(me.id),
-                                 allowed_updates=ALLOWED, drop_pending_updates=True)
+                err = "⚠️ Ye bot pehle se registered hai."
+            else:
+                await tb.set_webhook(url=f"{core.BASE_URL}/wh/{me.id}", secret_token=core.secret_for(me.id),
+                                     allowed_updates=ALLOWED, drop_pending_updates=True)
     except InvalidToken:
-        await bot.send_message(m.chat_id, "❌ Token invalid hai. Dobara check karke bhejo.")
-        return
+        err = "❌ Token invalid hai. Check karke dobara bhejo."
     except TelegramError as e:
-        await bot.send_message(m.chat_id, f"❌ Error: {e}")
+        err = f"❌ Error: {e}"
+    if err:
+        await ask_token(bot, chat, u.id, err=err)
         return
 
     now = int(time.time())
@@ -185,37 +303,35 @@ async def take_token(bot, m, token):
         ("INSERT OR IGNORE INTO settings(clone_id) VALUES(?)", (me.id,)),
         ("DELETE FROM state WHERE owner_id=?", (u.id,)),
     ])
-    trial = ""
+    lines = [f"🤖 @{me.username}", "",
+             "①  Pehle bot kholo aur /start dabao (tum admin ho)",
+             "②  /help se saare commands dekho",
+             f"③  Test kisi {bd('DUSRE')} account se karo"]
     o = await db.one("SELECT trial_used FROM owners WHERE id=?", u.id)
     if not o["trial_used"] and not await core.is_premium(u.id):
         await core.add_premium(u.id, core.TRIAL_DAYS)
         await db.ex("UPDATE owners SET trial_used=1 WHERE id=?", u.id)
-        trial = f"\n\n🎁 {core.TRIAL_DAYS} din ka Premium trial free mila!"
-    await bot.send_message(
-        m.chat_id,
-        f"✅ Bot ready: @{me.username}\n\n1️⃣ Pehle @{me.username} kholo aur /start dabao (tum admin ho)\n"
-        f"2️⃣ /help se saare commands dekho\n3️⃣ Test kisi DUSRE account se karo: wo message bhejega, tumhe us bot ki chat me aayega.{trial}",
-        reply_markup=menu(u.id))
+        lines += ["", f"🎁 {core.TRIAL_DAYS} din ka Premium trial free mila!"]
+    kb = Kb([[Btn("🤖 Open My Bot", url=f"https://t.me/{me.username}")], [B("🏠 Menu", "home")]])
+    await show(bot, chat, card("✅", "BOT READY", *lines), kb)
     await core.log(f"🆕 Clone: @{me.username} ({me.id}) by {u.full_name} ({u.id})")
 
 
-async def show_my(bot, chat, uid):
-    rows = await db.q("SELECT c.*,(SELECT COUNT(*) FROM users x WHERE x.clone_id=c.id) n FROM clones c WHERE owner_id=?", uid)
-    if not rows:
-        await bot.send_message(chat, "Abhi tumhara koi bot nahi hai.", reply_markup=menu(uid))
-        return
-    for r in rows:
-        txt = f"🤖 @{r['username']}\nStatus: {r['status']}\n👥 Users: {r['n']}\n📅 Bana: {core.fdate(r['created'])}"
-        btns = []
-        if r["status"] in ("active", "paused"):
-            btns.append(B("⏸ Pause" if r["status"] == "active" else "▶️ Resume", f"pz:{r['id']}"))
-        btns.append(B("🗑 Delete", f"rm:{r['id']}"))
-        await bot.send_message(chat, txt, reply_markup=Kb([btns]))
+async def show_my(bot, chat, uid, old=None):
+    rows = await db.q("SELECT c.id,c.username,c.status,(SELECT COUNT(*) FROM users x WHERE x.clone_id=c.id) n FROM clones c WHERE owner_id=?", uid)
     until = await core.premium_until(uid)
     if await core.is_premium(uid):
-        await bot.send_message(chat, f"💎 Premium" + (f" {core.fdate(until)} tak" if until else ""))
+        plan = "💎 Premium" + (f" • {core.fdate(until)} tak" if until else "")
     else:
-        await bot.send_message(chat, f"🆓 Free plan ({core.FREE_USERS} users/bot). Upgrade: /upgrade")
+        plan = f"🆓 Free • {core.FREE_USERS} users/bot"
+    if not rows:
+        text = card("🤖", "MY BOTS", "Abhi tumhara koi bot nahi hai.", "", plan)
+        kb = Kb([[B("➕ Create Bot", "create")], [B("🏠 Menu", "home")]])
+    else:
+        lines = [f"{STATUS.get(r['status'], '⚪')}  @{r['username']}  •  👥 {r['n']}" for r in rows]
+        text = card("🤖", "MY BOTS", *lines, "", plan, "", "👇 Manage karne ke liye bot chuno")
+        kb = Kb([[B(f"⚙️ @{r['username']}", f"cl:{r['id']}")] for r in rows] + [[B("🏠 Menu", "home")]])
+    await show(bot, chat, text, kb, old)
 
 
 async def own_clone(uid, cid):
@@ -223,6 +339,25 @@ async def own_clone(uid, cid):
     if c and (c["owner_id"] == uid or uid == core.OWNER_ID):
         return c
     return None
+
+
+async def show_clone(bot, chat, uid, cid, old=None):
+    c = await own_clone(uid, cid)
+    if not c:
+        await show_my(bot, chat, uid, old)
+        return
+    n = (await db.one("SELECT COUNT(*) c FROM users WHERE clone_id=?", cid))["c"]
+    text = card("🤖", "BOT DETAILS",
+                f"◈ Bot: @{c['username']}",
+                f"◈ Status: {STATUS.get(c['status'], c['status'])}",
+                f"◈ Users: {n}",
+                f"◈ Bana: {core.fdate(c['created'])}")
+    rows = []
+    if c["status"] in ("active", "paused"):
+        rows.append([B("⏸ Pause" if c["status"] == "active" else "▶️ Resume", f"pz:{cid}")])
+    rows.append([B("🗑 Delete", f"rm:{cid}")])
+    rows.append([B("🔙 Back", "my")])
+    await show(bot, chat, text, Kb(rows), old)
 
 
 async def remove_clone(cid):
@@ -244,20 +379,30 @@ async def remove_clone(cid):
 
 
 # ================= PAYMENTS (Stars) =================
-async def show_plans(bot, chat, uid):
+async def show_plans(bot, chat, uid, old=None):
     until = await core.premium_until(uid)
-    cur = f"\n\n✅ Abhi Premium: {core.fdate(until)} tak (renew karoge to din jud jayenge)" if until > time.time() else ""
-    txt = (f"💎 TEAMVB Premium\n\n✅ {core.PREMIUM_CLONES} bots, unlimited users\n✅ Broadcast, auto-reply, working hours\n"
-           f"✅ VIP, tags, notes, force join, scheduled msgs\n✅ Daily report, branding hatao{cur}")
-    kb = Kb([[B(f"⭐{stars} Stars – {days} din", f"buy:{days}")] for days, stars in core.PLANS.items()])
-    await bot.send_message(chat, txt, reply_markup=kb)
+    status = (f"✅ Premium active: {core.fdate(until)} tak\n    (renew karoge to din jud jayenge)"
+              if until > time.time() else "🆓 Abhi Free plan par ho")
+    text = card("💎", "PREMIUM",
+                f"◈ {core.PREMIUM_CLONES} bots • Unlimited users",
+                "◈ Broadcast • Auto-reply • Working hours",
+                "◈ VIP • Tags • Notes • Force join",
+                "◈ Scheduled msgs • Daily report",
+                "◈ Branding hatao", "", status, "", "👇 Plan chuno")
+    rows = [[B(f"⭐ {stars} Stars  •  {days} din", f"buy:{days}")] for days, stars in core.PLANS.items()]
+    rows.append([B("🏠 Menu", "home")])
+    await show(bot, chat, text, Kb(rows), old)
 
 
-async def send_invoice(bot, chat, days):
+async def send_invoice(bot, chat, days, old=None):
+    await _purge(bot, chat, old)
     stars = core.PLANS[days]
-    await bot.send_invoice(chat_id=chat, title=f"TEAMVB Premium – {days} din",
-                           description=f"{days} din ka Premium", payload=f"plan:{days}",
-                           provider_token="", currency="XTR", prices=[LabeledPrice(f"{days} din Premium", stars)])
+    kb = Kb([[Btn("⭐ Pay Now", pay=True)], [B("🔙 Back", "up")]])
+    s = await bot.send_invoice(chat_id=chat, title=f"Spark Live Premium – {days} din",
+                               description=f"{days} din ka Premium", payload=f"plan:{days}",
+                               provider_token="", currency="XTR",
+                               prices=[LabeledPrice(f"{days} din Premium", stars)], reply_markup=kb)
+    _last[chat] = s.message_id
 
 
 async def paid(bot, m):
@@ -272,52 +417,63 @@ async def paid(bot, m):
     await db.ex("INSERT INTO payments(owner_id,stars,days,charge_id,ts,source) VALUES(?,?,?,?,?,'stars')",
                 u.id, sp.total_amount, days, sp.telegram_payment_charge_id, int(time.time()))
     new = await core.add_premium(u.id, days)
-    await bot.send_message(m.chat_id, f"🎉 Payment mil gaya! Premium {core.fdate(new)} tak active.", reply_markup=menu(u.id))
+    await show(bot, m.chat_id,
+               card("🎉", "PAYMENT SUCCESS", f"💎 Premium {core.fdate(new)} tak active",
+                    f"⭐ {sp.total_amount} Stars  •  {days} din", "", "Shukriya! 🙏"),
+               menu(u.id))
     await core.notify(core.OWNER_ID, f"💰 {u.full_name} ({u.id}) ne ⭐{sp.total_amount} diye ({days} din)")
     await core.log(f"💰 Payment ⭐{sp.total_amount} from {u.id} ({days}d)")
 
 
 async def redeem(bot, m, code):
-    uid = m.from_user.id
+    uid, chat = m.from_user.id, m.chat_id
     await db.ex("DELETE FROM state WHERE owner_id=?", uid)
     code = code.upper()
     c = await db.one("SELECT * FROM coupons WHERE code=?", code)
     if not c or c["used"] >= c["max_uses"]:
-        await bot.send_message(m.chat_id, "❌ Coupon invalid ya khatam.")
+        await ask_coupon(bot, chat, uid, err="❌ Coupon invalid ya khatam.")
         return
     if await db.one("SELECT 1 x FROM coupon_uses WHERE code=? AND owner_id=?", code, uid):
-        await bot.send_message(m.chat_id, "⚠️ Ye coupon tum pehle use kar chuke ho.")
+        await ask_coupon(bot, chat, uid, err="⚠️ Ye coupon tum pehle use kar chuke ho.")
         return
     await db.batch([("INSERT INTO coupon_uses(code,owner_id) VALUES(?,?)", (code, uid)),
                     ("UPDATE coupons SET used=used+1 WHERE code=?", (code,))])
     new = await core.add_premium(uid, c["days"])
-    await bot.send_message(m.chat_id, f"🎉 Coupon laga! +{c['days']} din. Premium {core.fdate(new)} tak.", reply_markup=menu(uid))
+    await show(bot, chat, card("🎉", "COUPON APPLIED", f"◈ +{c['days']} din Premium", f"◈ Premium {core.fdate(new)} tak"), menu(uid))
 
 
 # ================= CALLBACKS =================
 async def on_cb(bot, q):
-    u, d, chat = q.from_user, q.data or "", q.message.chat.id
+    u, d = q.from_user, q.data or ""
+    msg = q.message
+    chat = msg.chat.id
     await core.ensure_owner(u)
     o = await db.one("SELECT banned FROM owners WHERE id=?", u.id)
     if o["banned"] and u.id != core.OWNER_ID:
         await q.answer("Banned", show_alert=True)
         return
     await q.answer()
-    if d == "create":
-        await start_create(bot, chat, u.id)
+    await db.ex("DELETE FROM state WHERE owner_id=?", u.id)
+
+    if d == "home":
+        await home(bot, chat, u, msg)
+    elif d == "create":
+        await start_create(bot, chat, u.id, msg)
     elif d == "my":
-        await show_my(bot, chat, u.id)
+        await show_my(bot, chat, u.id, msg)
     elif d == "up":
-        await show_plans(bot, chat, u.id)
+        await show_plans(bot, chat, u.id, msg)
     elif d == "coupon":
-        await db.ex("INSERT OR REPLACE INTO state(owner_id,state) VALUES(?,'coupon')", u.id)
-        await bot.send_message(chat, "🎟 Coupon code bhejo (ya /cancel):")
+        await ask_coupon(bot, chat, u.id, msg)
     elif d == "help":
-        await bot.send_message(chat, HELP, reply_markup=menu(u.id))
+        await show(bot, chat, help_text(), back_kb(), msg)
     elif d.startswith("buy:"):
         days = int(d[4:]) if d[4:].isdigit() else 0
         if days in core.PLANS:
-            await send_invoice(bot, chat, days)
+            await send_invoice(bot, chat, days, msg)
+    elif d.startswith("cl:"):
+        if d[3:].isdigit():
+            await show_clone(bot, chat, u.id, int(d[3:]), msg)
     elif d.startswith(("pz:", "rm:", "rmy:")):
         act, _, cid = d.partition(":")
         c = await own_clone(u.id, int(cid)) if cid.isdigit() else None
@@ -327,23 +483,35 @@ async def on_cb(bot, q):
             ns = "paused" if c["status"] == "active" else "active"
             await db.ex("UPDATE clones SET status=? WHERE id=?", ns, c["id"])
             core.inval(c["id"])
-            await bot.send_message(chat, f"@{c['username']} → {ns}")
+            await show_clone(bot, chat, u.id, c["id"], msg)
         elif act == "rm":
-            await bot.send_message(chat, f"⚠️ @{c['username']} delete karna hai? Saara data (users, chats) hamesha ke liye jayega.",
-                                   reply_markup=Kb([[B("✅ Haan delete", f"rmy:{c['id']}"), B("❌ Nahi", "my")]]))
+            kb = Kb([[B("✅ Haan, delete", f"rmy:{c['id']}"), B("❌ Nahi", f"cl:{c['id']}")]])
+            await show(bot, chat, card("⚠️", "DELETE BOT", f"@{c['username']} delete karna hai?", "",
+                                       "Saara data (users, chats) hamesha ke liye jayega."), kb, msg)
         elif act == "rmy":
             await remove_clone(c["id"])
-            await bot.send_message(chat, f"🗑 @{c['username']} delete ho gaya.", reply_markup=menu(u.id))
             await core.log(f"🗑 Clone removed: @{c['username']} by {u.id}")
+            await show(bot, chat, card("🗑", "DELETED", f"@{c['username']} delete ho gaya."), menu(u.id), msg)
     elif d.startswith("o:") and u.id == core.OWNER_ID:
-        await owner_cb(bot, chat, d[2:])
+        await owner_cb(bot, chat, d[2:], msg)
 
 
 # ================= OWNER PANEL =================
 def panel_kb():
-    return Kb([[B("📊 Dashboard", "o:dash"), B("📋 Clones", "o:clones")],
+    return Kb([[B("📊 Dashboard", "o:dash"), B("📋 Clones", "o:cl:0")],
                [B("💰 Payments", "o:pay"), B("🛠 Maintenance", "o:maint")],
-               [B("📥 Backup", "o:backup"), B("📖 Commands", "o:help")]])
+               [B("📥 Backup", "o:backup"), B("📖 Commands", "o:help")],
+               [B("🏠 Menu", "home")]])
+
+
+def oback():
+    return Kb([[B("🔙 Panel", "o:menu")]])
+
+
+async def panel_text():
+    m = await db.kv_get("maintenance", "0")
+    return card("👑", "OWNER PANEL", "◈ Control center",
+                f"◈ Naye clones: {'🔴 BAND' if m == '1' else '🟢 chalu'}")
 
 
 async def dashboard():
@@ -359,26 +527,34 @@ async def dashboard():
     ])
     st = {x["status"]: x["c"] for x in r[0]}
     maint = await db.kv_get("maintenance", "0")
-    return (f"📊 Dashboard\n🤖 Clones: {sum(st.values())} (active {st.get('active', 0)}, paused {st.get('paused', 0)}, "
-            f"dead {st.get('dead', 0)}, banned {st.get('banned', 0)})\n👤 Main-bot users: {r[1][0]['c']}\n"
-            f"👥 Clone users total: {r[2][0]['c']}\n💬 24h messages: {r[3][0]['c']}\n💎 Premium owners: {r[6][0]['c']}\n"
-            f"⭐ Kamai: {r[4][0]['s']} total | {r[5][0]['s']} (30 din)\n🛠 Maintenance: {'ON' if maint == '1' else 'off'}")
+    return card("📊", "DASHBOARD",
+                f"🤖 Clones: {sum(st.values())}",
+                f"     🟢 {st.get('active', 0)}  ⏸ {st.get('paused', 0)}  💀 {st.get('dead', 0)}  🚫 {st.get('banned', 0)}",
+                f"👤 Main-bot users: {r[1][0]['c']}",
+                f"👥 Clone users total: {r[2][0]['c']}",
+                f"💬 24h messages: {r[3][0]['c']}",
+                f"💎 Premium owners: {r[6][0]['c']}",
+                f"⭐ Kamai: {r[4][0]['s']} total  |  {r[5][0]['s']} (30 din)",
+                f"🛠 Maintenance: {'ON' if maint == '1' else 'off'}")
 
 
-async def clones_text(page=0):
+async def clones_page(page=0):
     rows = await db.q(
         "SELECT c.id,c.username,c.owner_id,c.status,(SELECT COUNT(*) FROM users u WHERE u.clone_id=c.id) n "
-        "FROM clones c ORDER BY c.created DESC LIMIT 15 OFFSET ?", page * 15)
+        "FROM clones c ORDER BY c.created DESC LIMIT 16 OFFSET ?", page * 15)
+    more = len(rows) > 15
+    rows = rows[:15]
     if not rows:
-        return "Koi clone nahi."
-    return f"📋 Clones (page {page})\nID | bot | owner | status | users\n" + "\n".join(
-        f"{r['id']} | @{r['username']} | {r['owner_id']} | {r['status']} | {r['n']}" for r in rows)
+        return card("📋", "CLONES", "Koi clone nahi."), False
+    lines = [f"{r['id']} • @{r['username']} • 👤{r['owner_id']} • {r['status']} • 👥{r['n']}" for r in rows]
+    return card("📋", f"CLONES P{page + 1}", *lines), more
 
 
 async def payments_text():
     rows = await db.q("SELECT owner_id,stars,days,ts FROM payments ORDER BY id DESC LIMIT 15")
-    return "💰 Recent payments\n" + "\n".join(
-        f"{core.fdate(r['ts'])} | {r['owner_id']} | ⭐{r['stars']} | {r['days']}d" for r in rows) if rows else "Abhi koi payment nahi."
+    if not rows:
+        return card("💰", "PAYMENTS", "Abhi koi payment nahi.")
+    return card("💰", "PAYMENTS", *[f"{core.fdate(r['ts'])} • 👤{r['owner_id']} • ⭐{r['stars']} • {r['days']}d" for r in rows])
 
 
 async def send_csv(bot, chat, name, rows):
@@ -396,30 +572,38 @@ async def backup(bot, chat):
     await send_csv(bot, chat, "clones.csv", await db.q("SELECT id,username,name,owner_id,status,created FROM clones"))
     await send_csv(bot, chat, "owners.csv", await db.q("SELECT * FROM owners"))
     await send_csv(bot, chat, "payments.csv", await db.q("SELECT * FROM payments"))
-    await bot.send_message(chat, "📥 Backup bhej diya (tokens include nahi hain).")
 
 
 async def toggle_maint(on):
     await db.kv_set("maintenance", "1" if on else "0")
 
 
-async def owner_cb(bot, chat, a):
+async def owner_cb(bot, chat, a, old):
     if a == "menu":
-        await bot.send_message(chat, "👑 Owner Panel", reply_markup=panel_kb())
+        await show(bot, chat, await panel_text(), panel_kb(), old)
     elif a == "dash":
-        await bot.send_message(chat, await dashboard())
-    elif a == "clones":
-        await bot.send_message(chat, await clones_text(0))
+        await show(bot, chat, await dashboard(), oback(), old)
+    elif a.startswith("cl:"):
+        page = int(a[3:]) if a[3:].isdigit() else 0
+        text, more = await clones_page(page)
+        nav = []
+        if page > 0:
+            nav.append(B("◀ Prev", f"o:cl:{page - 1}"))
+        if more:
+            nav.append(B("Next ▶", f"o:cl:{page + 1}"))
+        rows = ([nav] if nav else []) + [[B("🔙 Panel", "o:menu")]]
+        await show(bot, chat, text, Kb(rows), old)
     elif a == "pay":
-        await bot.send_message(chat, await payments_text())
+        await show(bot, chat, await payments_text(), oback(), old)
     elif a == "maint":
         on = await db.kv_get("maintenance", "0") != "1"
         await toggle_maint(on)
-        await bot.send_message(chat, f"🛠 Naye clones: {'BAND' if on else 'chalu'}")
+        await show(bot, chat, await panel_text(), panel_kb(), old)
     elif a == "backup":
         await backup(bot, chat)
+        await show(bot, chat, card("📥", "BACKUP", "Files bhej di gayi hain.", "(Tokens include nahi hain)"), oback(), old)
     elif a == "help":
-        await bot.send_message(chat, OHELP)
+        await show(bot, chat, card("👑", "OWNER COMMANDS", OHELP), oback(), old)
 
 
 async def broadcast_all(bot, chat, from_chat, mid):
@@ -439,13 +623,14 @@ async def owner_cmd(bot, m, cmd, rest):
     a, chat = rest.split(), m.chat_id
     say = lambda t: bot.send_message(chat, t)
     if cmd in ("owner", "admin", "panel"):
-        await bot.send_message(chat, "👑 Owner Panel", reply_markup=panel_kb())
+        await show(bot, chat, await panel_text(), panel_kb())
     elif cmd == "ownerhelp":
         await say(OHELP)
     elif cmd == "stats":
         await say(await dashboard())
     elif cmd == "clones":
-        await say(await clones_text(int(a[0]) if a and a[0].isdigit() else 0))
+        text, _ = await clones_page(int(a[0]) if a and a[0].isdigit() else 0)
+        await say(text)
     elif cmd == "search":
         k = rest.lstrip("@")
         rows = await db.q("SELECT id,username,owner_id,status FROM clones WHERE username LIKE ? OR CAST(owner_id AS TEXT)=? OR CAST(id AS TEXT)=? LIMIT 15",
@@ -463,7 +648,7 @@ async def owner_cmd(bot, m, cmd, rest):
             await say("Use: /remove CLONE_ID")
             return
         c = await db.one("SELECT username,owner_id FROM clones WHERE id=?", int(a[0]))
-        if await remove_clone(int(a[0])):
+        if c and await remove_clone(int(a[0])):
             await say("🗑 Clone remove ho gaya.")
             await core.notify(c["owner_id"], f"ℹ️ Tumhara bot @{c['username']} admin ne remove kar diya.")
             await core.log(f"🗑 Owner removed clone {a[0]}")
@@ -528,3 +713,4 @@ async def owner_cmd(bot, m, cmd, rest):
             await say("Use: /maintenance on|off")
     elif cmd == "backup":
         await backup(bot, chat)
+        await say("📥 Backup bhej diya (tokens include nahi hain).")
