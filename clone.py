@@ -19,6 +19,31 @@ _hdr = {}
 _off = {}
 _limit_told = set()
 
+# ================= STYLE =================
+LINE = "━━━━━━━━━━━━━━━━━━"
+
+
+def _mk():
+    d = {}
+    for i, c in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+        d[c] = chr(0x1D5D4 + i)
+    for i, c in enumerate("abcdefghijklmnopqrstuvwxyz"):
+        d[c] = chr(0x1D5EE + i)
+    for i, c in enumerate("0123456789"):
+        d[c] = chr(0x1D7EC + i)
+    return d
+
+
+_BOLD = _mk()
+
+
+def bd(t):
+    return "".join(_BOLD.get(c, c) for c in t)
+
+
+def card(icon, title, *lines):
+    return f"✦{LINE}✦\n   {icon} {bd(title)} {icon}\n✦{LINE}✦\n\n" + "\n".join(lines)
+
 
 def B(t, d):
     return Btn(t, callback_data=d)
@@ -51,8 +76,17 @@ def refresh(cid):
     _cache.pop(cid, None)
 
 
-def brand(ctx):
-    return "" if ctx.premium else core.BRAND.format(main=core.MAIN_USERNAME)
+async def branding_off(ctx):
+    """Branding tabhi band hoti hai jab Premium ho AND owner ne /branding off kiya ho."""
+    if not ctx.premium:
+        return False
+    return await db.kv_get(f"nobrand:{ctx.cid}", "0") == "1"
+
+
+async def brand(ctx):
+    if await branding_off(ctx):
+        return ""
+    return "\n\n" + "─" * 16 + "\n" + core.BRAND.format(main=core.MAIN_USERNAME).strip()
 
 
 def preview(m):
@@ -155,6 +189,19 @@ async def auto_replies(ctx, m, text, uid):
             await m.reply_text(ctx.st["offline"] or "🌙 Admin abhi offline hai. Jaldi reply milega.")
 
 
+def welcome_text(ctx, name):
+    w = ctx.st["welcome"]
+    if w:
+        return w
+    return card(
+        "⚡", "WELCOME",
+        f"👋 {bd('Hello')}, {name}!", "",
+        "◈ Apna message yahan likho",
+        "◈ Admin jaldi reply karega 💬",
+        "◈ Tumhari privacy safe hai 🔒",
+    )
+
+
 async def on_user(ctx, m):
     u, cid, bot = m.from_user, ctx.cid, ctx.bot
     now = int(time.time())
@@ -194,8 +241,7 @@ async def on_user(ctx, m):
         await m.reply_text("🤖 Pehle verify karo:", reply_markup=Kb([[B("✅ Main insaan hu", "cap")]]))
         return
     if text.startswith("/start"):
-        w = ctx.st["welcome"] or "👋 Hello! Apna message yahan likho, admin jaldi reply karega."
-        await m.reply_text(w + brand(ctx))
+        await m.reply_text(welcome_text(ctx, u.first_name) + await brand(ctx))
         return
     if text.startswith("/link"):
         await m.reply_text(f"🔗 Tumhara link:\nhttps://t.me/{ctx.clone['username']}?start=ref_{u.id}")
@@ -209,14 +255,24 @@ async def on_user(ctx, m):
     if ctx.premium:
         await auto_replies(ctx, m, text, u.id)
 
-    head = f"{'🆕 ' if new else ''}{'🔄 ' if row['status'] == 'closed' else ''}📩 {u.full_name} ({'@' + u.username if u.username else 'no username'})\n🆔 {u.id}"
-    if row["vip"]:
-        head += "  👑 VIP"
-    if row["tags"]:
-        head += f"\n🏷 {row['tags']}"
-    kb = Kb([[B("🚫 Block", f"b:{u.id}"), B("👑 VIP", f"v:{u.id}")],
-             [B("🎫 Close", f"x:{u.id}"), B("ℹ️ Info", f"i:{u.id}")]])
     reopened = row["status"] == "closed"
+    tm = time.strftime("%I:%M %p", time.gmtime(now + core.TZ_OFFSET * 60))
+    title = "NEW USER" if new else ("CHAT REOPENED" if reopened else "NEW MESSAGE")
+    lines = [
+        f"👤 {bd('Name')}   ➜  {u.full_name}",
+        f"🔗 {bd('User')}   ➜  {'@' + u.username if u.username else '—'}",
+        f"🆔 {bd('ID')}       ➜  {u.id}",
+        f"💬 {bd('Msgs')}   ➜  {row['msgs'] + 1}    •    🕒 {tm}",
+    ]
+    if row["vip"]:
+        lines.append("👑 VIP user")
+    if row["tags"]:
+        lines.append(f"🏷 {row['tags']}")
+    lines += ["", "↩️ Jawab dene ke liye is card ya", "     neeche ke message par Reply karo"]
+    head = card("📩", title, *lines)
+    kb = Kb([[B("🚫 Block", f"b:{u.id}"), B("👑 VIP", f"v:{u.id}")],
+             [B("🎫 Close", f"x:{u.id}"), B("ℹ️ Info", f"i:{u.id}")],
+             [B("📜 History", f"h:{u.id}")]])
 
     stmts = []
     for a in ctx.admins:
@@ -251,9 +307,10 @@ async def on_edit(ctx, m):
 # ================= CALLBACKS =================
 async def close_ticket(ctx, uid):
     await db.ex("UPDATE users SET status='closed' WHERE clone_id=? AND user_id=?", ctx.cid, uid)
+    b = await brand(ctx)
     try:
         await ctx.bot.send_message(
-            uid, "✅ Aapki chat close kar di gayi. Rating dein:" + brand(ctx),
+            uid, "✅ Aapki chat close kar di gayi. Rating dein:" + b,
             reply_markup=Kb([[B(f"⭐{i}", f"rt:{i}") for i in range(1, 6)]]),
         )
     except TelegramError:
@@ -342,6 +399,11 @@ async def on_cb(ctx, q):
     elif act == "i":
         await q.answer()
         await ctx.bot.send_message(q.message.chat.id, await userinfo(ctx, uid))
+    elif act == "h":
+        await q.answer()
+        rows = await db.q("SELECT dir,text FROM msglog WHERE clone_id=? AND user_id=? ORDER BY id DESC LIMIT 15", ctx.cid, uid)
+        s = "\n".join(f"{'👤' if r['dir'] == 'in' else '🧑‍💼'} {r['text']}" for r in reversed(rows)) or "Koi history nahi."
+        await ctx.bot.send_message(q.message.chat.id, card("📜", "HISTORY", s)[:4000])
     else:
         await q.answer()
 
@@ -403,32 +465,31 @@ async def target(ctx, m, args):
 
 NEED = "↩️ User ke message par Reply karo ya ID likho."
 
-HELP = """📖 Commands
-
-💬 Chat
+HELP_BODY = f"""💬 {bd('Chat')}
 ↩️ Message par Reply = user ko jawab
 /send ID text – user ko pehle message
 /close, /open – ticket (reply/ID)
 /info, /history, /export (reply/ID)
 /find naam – user dhundo
 
-🚫 Control (reply ya ID)
+🚫 {bd('Control')} (reply ya ID)
 /block /unblock /shadow /unshadow
 /blocked – blocked list
 
-⚙️ Settings
+⚙️ {bd('Settings')}
 /setwelcome text (ya reset)
 /maintenance on|off
 /captcha on|off
 /autoclean din (0 = band)
+/branding on|off (off = Premium)
 /addadmin ID, /deladmin ID (sirf owner)
 
-⚡ Saved replies
+⚡ {bd('Saved replies')}
 /save naam text, /r naam (reply), /saved, /delsaved naam
 
 📊 /stats /plan /backup /refstats
 
-💎 Premium
+💎 {bd('Premium')}
 /vip /unvip, /tag text, /untag, /note text
 /setoffline text, /hours 10:00-22:00 | off
 /autoreply keyword | jawab, /delauto keyword, /autoreplies
@@ -462,7 +523,27 @@ async def setting(ctx, col, val):
 
 
 async def c_help(ctx, m, rest, args):
-    await m.reply_text(HELP)
+    off = await branding_off(ctx)
+    plan = "💎 Premium" if ctx.premium else f"🆓 Free ({core.FREE_USERS} users)"
+    foot = (f"\n\n{'─' * 16}\n🏷 Branding: {'OFF' if off else 'ON'}   •   {plan}\n"
+            f"⚡ Powered by TEAMVB\nTry it @{core.MAIN_USERNAME}")
+    await m.reply_text(card("📖", "ADMIN PANEL", HELP_BODY) + foot)
+
+
+async def c_branding(ctx, m, rest, args):
+    off = await branding_off(ctx)
+    if not args or args[0].lower() not in ("on", "off"):
+        await m.reply_text(f"🏷 Branding abhi: {'OFF' if off else 'ON'}\nUse: /branding on  ya  /branding off (off = 💎 Premium)")
+        return
+    if args[0].lower() == "off":
+        if not ctx.premium:
+            await m.reply_text(f"💎 Branding hatana Premium me hai.\nUpgrade: @{core.MAIN_USERNAME} → /upgrade")
+            return
+        await db.kv_set(f"nobrand:{ctx.cid}", "1")
+        await m.reply_text("✅ Branding OFF. Ab 'Powered by TEAMVB' nahi dikhega.")
+    else:
+        await db.kv_set(f"nobrand:{ctx.cid}", "0")
+        await m.reply_text("✅ Branding ON.")
 
 
 async def c_stats(ctx, m, rest, args):
@@ -815,7 +896,7 @@ async def c_backup(ctx, m, rest, args):
 
 
 CMDS = {
-    "start": c_help, "help": c_help, "stats": c_stats, "plan": c_plan,
+    "start": c_help, "help": c_help, "stats": c_stats, "plan": c_plan, "branding": c_branding,
     "block": flag_cmd("blocked", 1, "🚫 Blocked"), "unblock": flag_cmd("blocked", 0, "✅ Unblocked"),
     "shadow": flag_cmd("shadow", 1, "👻 Shadow ban"), "unshadow": flag_cmd("shadow", 0, "✅ Shadow hata"),
     "vip": flag_cmd("vip", 1, "👑 VIP"), "unvip": flag_cmd("vip", 0, "VIP hata"),
