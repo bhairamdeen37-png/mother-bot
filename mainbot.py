@@ -186,11 +186,10 @@ async def on_msg(bot, m):
             elif kind == "coupon":
                 await redeem(bot, m, text.strip())
             return
-        await safe_delete(m)
         await home(bot, chat, u)
         return
 
-    await safe_delete(m)
+    # user ke /commands delete nahi hote (chat khali nahi dikhegi)
     await db.ex("DELETE FROM state WHERE owner_id=?", u.id)
     parts = text.split(maxsplit=1)
     cmd = parts[0][1:].split("@")[0].lower()
