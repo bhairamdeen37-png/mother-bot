@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import os
 import time
+import base64
 
 from cryptography.fernet import Fernet
 from telegram import Bot
@@ -16,7 +17,15 @@ BASE_URL = (os.environ.get("BASE_URL") or os.environ.get("RENDER_EXTERNAL_URL") 
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL_ID") or 0)
 FORCE_JOIN = os.environ.get("FORCE_JOIN_CHANNEL", "").strip()  # jaise @mychannel
 TZ_OFFSET = int(os.environ.get("TZ_OFFSET_MINUTES") or 330)  # India = +5:30
-_fernet = Fernet(os.environ["ENCRYPT_KEY"].encode())
+def _make_fernet(k):
+    k = k.strip().strip('"').strip("'")
+    try:
+        return Fernet(k.encode())
+    except Exception:
+        return Fernet(base64.urlsafe_b64encode(hashlib.sha256(k.encode()).digest()))
+
+
+_fernet = _make_fernet(os.environ["ENCRYPT_KEY"])
 
 MAIN_USERNAME = ""  # startup par set hota hai
 
