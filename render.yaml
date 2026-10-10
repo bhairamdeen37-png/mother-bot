@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: mother-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: MAIN_BOT_TOKEN
+        sync: false
+      - key: OWNER_ID
+        sync: false
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: ENCRYPT_KEY
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: LOG_CHANNEL_ID
+        sync: false
+      - key: FORCE_JOIN_CHANNEL
+        sync: false
